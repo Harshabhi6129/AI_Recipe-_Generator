@@ -7,11 +7,11 @@ from PIL import Image
 # --------------------------
 # 1) Environment Setup
 # --------------------------
-load_dotenv()  # Load variables from .env if available
+load_dotenv()  # Loads variables from a .env file if present
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    st.error("❌ OPENAI_API_KEY not found in environment. Please set it before running.")
+    st.error("❌ OPENAI_API_KEY not found. Please set it before running.")
     st.stop()
 
 openai.api_key = OPENAI_API_KEY
@@ -22,37 +22,44 @@ openai.api_key = OPENAI_API_KEY
 
 def generate_recipe_text(ingredients, meal_type, cuisine, cooking_time, complexity, recipe_name=None):
     """
-    Generate a detailed, well-formatted recipe (and suggestions) using the OpenAI API.
-    When recipe_name is provided, generate a specific detailed recipe.
-    Otherwise, generate a recipe based on input details and list 3 similar recipe suggestions.
+    Generate a detailed, well-formatted recipe using the OpenAI API.
+    If recipe_name is provided, generate a specific detailed recipe.
+    Otherwise, generate a recipe based on input details and include exactly 3 alternative recipe suggestions.
     """
     if recipe_name:
         prompt = f"""
-You are an expert chef and an acclaimed recipe writer. Create a detailed, engaging, and well-structured recipe for "{recipe_name}".
+You are an expert chef and professional recipe writer. Create a detailed, engaging, and well-structured recipe for "{recipe_name}".
 Include:
-- A creative and catchy title.
-- A clear list of ingredients with measurements.
-- Step-by-step instructions.
-- Useful cooking tips and suggestions for presentation or enhancement.
-Ensure the recipe is professional, detailed, and formatted for easy reading.
+- A creative, catchy title.
+- A clear list of ingredients with precise measurements.
+- Step-by-step cooking instructions.
+- Useful cooking tips and presentation suggestions.
+Ensure the recipe is professionally formatted and easy to follow.
 """
     else:
         prompt = f"""
-You are an expert chef and an acclaimed recipe writer with a flair for creativity.
-Using the details below, generate a comprehensive, well-formatted recipe:
+You are an expert chef and acclaimed recipe writer with a flair for creativity.
+Using the details below, generate a comprehensive, well-formatted recipe.
+
+Details:
 • Ingredients: {ingredients}
 • Meal Type: {meal_type}
 • Cuisine Preference: {cuisine}
 • Cooking Time: {cooking_time}
 • Complexity: {complexity}
 
-Your response should include:
-1. A catchy title.
-2. A detailed list of ingredients with precise measurements.
-3. Step-by-step cooking instructions.
-4. Helpful cooking tips.
-5. After the main recipe, list 3 creative, similar recipe suggestions (names only) under the header "Other Recipe Suggestions:".
-Make sure the recipe is clear, engaging, and professional.
+Your response should have two sections:
+
+**Main Recipe**:
+- A catchy title.
+- A detailed list of ingredients with measurements.
+- Step-by-step cooking instructions.
+- Helpful cooking tips.
+
+**Other Recipe Suggestions**:
+After the main recipe, output exactly three alternative recipe names (only names) on separate lines. Each suggestion should be prefixed with a dash ("- "). Label this section clearly with "Other Recipe Suggestions:".
+
+Ensure the entire response is clear, engaging, and professionally formatted.
 """
 
     try:
@@ -69,18 +76,24 @@ Make sure the recipe is clear, engaging, and professional.
     except Exception as e:
         return f"ERROR: {e}", []
 
-    # Split the response to separate the main recipe from the suggestions.
+    # Split the response by lines and separate the two sections.
     lines = full_text.split("\n")
     main_recipe_lines = []
     suggestions = []
     is_suggestions_part = False
 
     for line in lines:
+        # Detect the start of suggestions
         if "Other Recipe Suggestions:" in line:
             is_suggestions_part = True
             continue
+
         if is_suggestions_part:
-            if line.strip():
+            if line.strip().startswith("-"):
+                # Remove the dash and any extra spaces
+                suggestions.append(line.strip()[1:].strip())
+            elif line.strip():
+                # In case the suggestion doesn't have a dash, add it
                 suggestions.append(line.strip())
         else:
             main_recipe_lines.append(line.strip())
@@ -97,7 +110,7 @@ def recognize_ingredients_from_image(image_bytes):
 
 def format_recipe_text(recipe_text):
     """
-    Format the recipe text into bold headings for sections, bullet lists for ingredients/tips,
+    Format the recipe text by emphasizing section headers and using bullet lists for ingredients/tips
     and numbered steps for instructions.
     """
     lines = recipe_text.split("\n")
@@ -108,6 +121,8 @@ def format_recipe_text(recipe_text):
 
     for line in lines:
         line_stripped = line.strip()
+
+        # Identify section headers and format them in bold.
         if line_stripped.lower().startswith("ingredients"):
             current_section = "ingredients"
             formatted_lines.append(f"**{line_stripped}**")
@@ -121,11 +136,21 @@ def format_recipe_text(recipe_text):
             current_section = "tips"
             formatted_lines.append(f"**{line_stripped}**")
             continue
+        elif line_stripped.lower().startswith("main recipe"):
+            current_section = "main_recipe"
+            formatted_lines.append(f"## **{line_stripped}**")
+            continue
+        elif line_stripped.lower().startswith("other recipe suggestions"):
+            current_section = "suggestions"
+            formatted_lines.append(f"## **{line_stripped}**")
+            continue
         elif line_stripped == "":
             current_section = None
             is_instruction_section = False
+            formatted_lines.append("")
             continue
 
+        # Format the content based on the section.
         if current_section == "ingredients":
             formatted_lines.append(f"- {line_stripped}")
         elif current_section == "instructions":
@@ -204,10 +229,12 @@ if generate_button:
 
             if suggestions:
                 st.markdown("### 🔍 **Other Recipe Suggestions:**")
+                # Create a tab for each suggestion with improved formatting.
                 suggestion_tabs = st.tabs(suggestions)
                 for i, tab in enumerate(suggestion_tabs):
                     with tab:
-                        with st.spinner(f"Fetching details for '{suggestions[i]}'..."):
+                        st.markdown(f"## **{suggestions[i]}**")
+                        with st.spinner(f"Generating detailed recipe for '{suggestions[i]}'..."):
                             detailed_text, _ = generate_recipe_text(
                                 ingredients,
                                 meal_type,
@@ -219,6 +246,6 @@ if generate_button:
                         if "ERROR" in detailed_text:
                             st.error(detailed_text)
                         else:
+                            st.markdown("---")
                             formatted_detailed = format_recipe_text(detailed_text)
-                            st.markdown(f"#### {suggestions[i]}")
                             st.markdown(formatted_detailed)
