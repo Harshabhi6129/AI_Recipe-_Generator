@@ -3,6 +3,7 @@ import openai
 import os
 from dotenv import load_dotenv
 from PIL import Image
+import re
 
 # --------------------------
 # 1) Environment Setup
@@ -110,62 +111,136 @@ def recognize_ingredients_from_image(image_bytes):
 
 def format_recipe_text(recipe_text):
     """
-    Format the recipe text by emphasizing section headers and using bullet lists for ingredients/tips
-    and numbered steps for instructions.
+    Format the recipe text by:
+      - Converting recognized section headers (title, main recipe, ingredients, instructions,
+        directions, method, tips, etc.) into bold or markdown headings.
+      - Using bullet points for ingredients and tips.
+      - Using numbered steps for instructions.
+      - Keeping the text well-structured and easy to read.
     """
+
+    # We'll define some synonyms for the 'instructions' section to catch variations like "Directions" or "Method".
+    instruction_synonyms = ["instructions", "directions", "method"]
+
+    # Headings_map: the key is a word to detect, the value is the markdown heading level.
+    # We'll detect them case-insensitively.
+    headings_map = {
+        "title": "##",
+        "main recipe": "##",
+        "ingredients": "###",
+        "tips": "###",
+        "other recipe suggestions": "##"
+    }
+
     lines = recipe_text.split("\n")
     formatted_lines = []
+
+    # We'll store instructions separately so we can turn them into numbered steps.
+    instructions_buffer = []
+    is_in_instructions_section = False
+
     current_section = None
-    instructions = []
-    is_instruction_section = False
 
     for line in lines:
         line_stripped = line.strip()
-
-        # Identify section headers and format them in bold.
-        if line_stripped.lower().startswith("ingredients"):
-            current_section = "ingredients"
-            formatted_lines.append(f"**{line_stripped}**")
-            continue
-        elif line_stripped.lower().startswith("instructions"):
-            current_section = "instructions"
-            formatted_lines.append(f"**{line_stripped}**")
-            is_instruction_section = True
-            continue
-        elif line_stripped.lower().startswith("tips"):
-            current_section = "tips"
-            formatted_lines.append(f"**{line_stripped}**")
-            continue
-        elif line_stripped.lower().startswith("main recipe"):
-            current_section = "main_recipe"
-            formatted_lines.append(f"## **{line_stripped}**")
-            continue
-        elif line_stripped.lower().startswith("other recipe suggestions"):
-            current_section = "suggestions"
-            formatted_lines.append(f"## **{line_stripped}**")
-            continue
-        elif line_stripped == "":
-            current_section = None
-            is_instruction_section = False
+        if not line_stripped:
+            # Blank line -> just append and reset
             formatted_lines.append("")
             continue
 
-        # Format the content based on the section.
-        if current_section == "ingredients":
-            formatted_lines.append(f"- {line_stripped}")
-        elif current_section == "instructions":
-            instructions.append(line_stripped)
-        elif current_section == "tips":
-            formatted_lines.append(f"- {line_stripped}")
+        lower_line = line_stripped.lower()
+
+        # 1) Check if the line matches any known heading
+        # We'll do a quick loop over headings_map
+        matched_heading = None
+        for heading_key, heading_level in headings_map.items():
+            # If the line starts with the heading key (case-insensitive)
+            if lower_line.startswith(heading_key):
+                matched_heading = heading_level
+                break
+
+        # 2) Check if it's an instruction synonym (e.g. "Instructions:", "Method:", etc.)
+        if matched_heading is None:  # we haven't matched any heading yet
+            for word in instruction_synonyms:
+                if lower_line.startswith(word):
+                    matched_heading = "###"
+                    current_section = "instructions"
+                    break
+
+        # 3) If matched a heading, format accordingly and update current_section
+        if matched_heading:
+            # Output the heading in bold or with "##"
+            formatted_lines.append(f"{matched_heading} **{line_stripped}**")
+
+            # Determine if we are in instructions or not
+            if "ingredients" in lower_line:
+                current_section = "ingredients"
+                # If we had instructions stored before, let's flush them (though typically won't happen mid-text)
+                if instructions_buffer:
+                    formatted_lines.extend(_flush_instructions(instructions_buffer))
+            elif "tips" in lower_line:
+                current_section = "tips"
+                # Flush instructions if any
+                if instructions_buffer:
+                    formatted_lines.extend(_flush_instructions(instructions_buffer))
+            elif "main recipe" in lower_line:
+                current_section = "main_recipe"
+                if instructions_buffer:
+                    formatted_lines.extend(_flush_instructions(instructions_buffer))
+            elif "other recipe suggestions" in lower_line:
+                current_section = "suggestions"
+                if instructions_buffer:
+                    formatted_lines.extend(_flush_instructions(instructions_buffer))
+            elif any(word in lower_line for word in instruction_synonyms):
+                # It's an instruction heading
+                current_section = "instructions"
+                # If we had instructions from a previous instructions section, let's flush them first
+                if instructions_buffer:
+                    formatted_lines.extend(_flush_instructions(instructions_buffer))
+                # Start a fresh instructions buffer
+                instructions_buffer = []
+            else:
+                # For headings like "Title" etc.
+                current_section = "other"
+                if instructions_buffer:
+                    formatted_lines.extend(_flush_instructions(instructions_buffer))
+
         else:
-            formatted_lines.append(line_stripped)
+            # This line is NOT a heading. Format based on the current section.
 
-    if instructions:
-        formatted_lines.append("")
-        for idx, step in enumerate(instructions, start=1):
-            formatted_lines.append(f"{idx}. {step}")
+            # If we're in instructions, store these lines for final numbering
+            if current_section == "instructions":
+                instructions_buffer.append(line_stripped)
+            
+            # If in ingredients or tips, bullet them
+            elif current_section == "ingredients" or current_section == "tips":
+                # If the line already has a dash or bullet, keep it. Otherwise, add one.
+                if re.match(r"^[-*]\s", line_stripped):
+                    formatted_lines.append(line_stripped)
+                else:
+                    formatted_lines.append(f"- {line_stripped}")
+            
+            else:
+                # For sections not specifically known, just keep the text as is
+                formatted_lines.append(line_stripped)
+    
+    # After the loop ends, if there's anything left in instructions_buffer, flush it
+    if instructions_buffer:
+        formatted_lines.extend(_flush_instructions(instructions_buffer))
+        instructions_buffer = []
 
+    # Return the final joined string
     return "\n".join(formatted_lines)
+
+def _flush_instructions(instructions_buffer):
+    """
+    Convert any collected instructions into a numbered list.
+    """
+    output = []
+    output.append("")  # blank line before the steps
+    for idx, step in enumerate(instructions_buffer, start=1):
+        output.append(f"{idx}. {step}")
+    return output
 
 # --------------------------
 # 3) Streamlit UI
